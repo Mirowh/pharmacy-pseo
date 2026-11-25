@@ -1,0 +1,34 @@
+name: Daily Pharmacy Site Build
+
+on:
+  schedule:
+    - cron: '0 19 * * *' # 매일 UTC 19:00 = 한국시간 새벽 04:00
+  workflow_dispatch:     # 수동 실행 버튼 활성화
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 가져오기
+        uses: actions/checkout@v4
+
+      - name: 파이썬 세팅
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 라이브러리 설치 및 사이트 생성
+        env:
+          DATA_GO_KR_API_KEY: ${{ secrets.DATA_GO_KR_API_KEY }}
+        run: |
+          pip install -r requirements.txt
+          python build.py
+
+      - name: Netlify 자동 배포
+        uses: nwtgck/actions-netlify@v3.0
+        with:
+          publish-dir: './dist'
+          production-deploy: true
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
