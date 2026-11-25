@@ -14,7 +14,7 @@ DIST_DIR = "dist"
 AREA_DIR = os.path.join(DIST_DIR, "area")
 
 def fetch_all_pharmacies():
-    """공공데이터포털에서 전국 약국 전체 데이터를 페이지네이션으로 수집"""
+    """공공데이터포털에서 전국 약국 전체 데이터를 수집 (실패 시 최대 3회 재시도)"""
     if not API_KEY:
         raise ValueError("DATA_GO_KR_API_KEY 환경변수가 설정되지 않았습니다.")
 
@@ -33,32 +33,40 @@ def fetch_all_pharmacies():
             "numOfRows": str(num_of_rows),
             "_type": "json"
         }
-        try:
-            res = requests.get(url, params=params, timeout=20)
-            res.raise_for_status()
-            data = res.json()
-            body = data.get("response", {}).get("body", {})
+        success = False
+        for attempt in range(1, 4):
+            try:
+                res = requests.get(url, params=params, timeout=30)
+                res.raise_for_status()
+                data = res.json()
+                body = data.get("response", {}).get("body", {})
 
-            if page_no == 1:
-                total_count = int(body.get("totalCount", 0))
-                total_pages = math.ceil(total_count / num_of_rows)
-                print(f"[정보] 총 약국 수: {total_count}개 / 총 페이지: {total_pages}페이지")
+                if page_no == 1:
+                    total_count = int(body.get("totalCount", 0))
+                    total_pages = math.ceil(total_count / num_of_rows)
+                    print(f"[정보] 총 약국 수: {total_count}개 / 총 페이지: {total_pages}페이지")
 
-            items_wrapper = body.get("items")
-            if not items_wrapper or not isinstance(items_wrapper, dict):
+                items_wrapper = body.get("items")
+                if not items_wrapper or not isinstance(items_wrapper, dict):
+                    success = True
+                    break
+
+                items = items_wrapper.get("item", [])
+                if isinstance(items, dict):
+                    items = [items]
+
+                all_items.extend(items)
+                print(f"  - {page_no}/{total_pages} 페이지 수집 완료 (누적 {len(all_items)}개)")
+                success = True
                 break
+            except Exception as e:
+                print(f"[재시도 {attempt}/3] {page_no}페이지 오류: {e}")
+                time.sleep(2)
 
-            items = items_wrapper.get("item", [])
-            if isinstance(items, dict):
-                items = [items]
-
-            all_items.extend(items)
-            print(f"  - {page_no}/{total_pages} 페이지 수집 완료 (누적 {len(all_items)}개)")
-            page_no += 1
-            time.sleep(0.2)
-        except Exception as e:
-            print(f"[경고] {page_no}페이지 수집 중 오류 발생: {e}")
-            break
+        if not success:
+            print(f"[건너뜀] {page_no}페이지 수집 실패, 다음 페이지로 진행합니다.")
+        page_no += 1
+        time.sleep(0.2)
 
     return all_items
 
@@ -147,13 +155,11 @@ def render_area_page(sido, sigungu, items, today_str):
         <h1 class="text-2xl font-extrabold text-gray-900 leading-tight">{sido} {sigungu} 야간·주말 약국</h1>
         <p class="text-sm text-gray-600 mt-2">총 <strong>{len(items)}곳</strong>의 야간·일요일·공휴일 운영 약국이 확인되었습니다. 방문 전 전화 확인을 권장합니다.</p>
 
-        <!-- 동네/약국명 실시간 검색창 -->
         <div class="mt-4">
             <input type="text" id="searchInput" placeholder="동네 이름이나 약국 이름을 검색하세요 (예: 운정, 금촌)"
                 class="w-full px-4 py-3 rounded-xl border border-gray-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
         </div>
 
-        <!-- 상단 애드센스 슬롯 -->
         <div class="my-5 bg-gray-100 border border-dashed border-gray-300 rounded-lg p-4 text-center text-xs text-gray-400">
             광고 영역 (Google AdSense)
         </div>
@@ -162,7 +168,6 @@ def render_area_page(sido, sigungu, items, today_str):
             {cards_html}
         </section>
 
-        <!-- 하단 애드센스 슬롯 -->
         <div class="my-6 bg-gray-100 border border-dashed border-gray-300 rounded-lg p-4 text-center text-xs text-gray-400">
             광고 영역 (Google AdSense)
         </div>
@@ -196,6 +201,76 @@ def build():
         addr_parts = str(item.get("dutyAddr", "")).split()
         if len(addr_parts) < 2:
             continue
-        sido
+        sido, sigungu = addr_parts[0], addr_parts[1]
+        grouped.setdefault((sido, sigungu), []).append(item)
+
+    links_html = ""
+    sitemap_urls = [f"{SITE_URL}/"]
+
+    for (sido, sigungu), items in sorted(grouped.items()):
+        filename = f"{sido}-{sigungu}.html"
+        filepath = os.path.join(AREA_DIR, filename)
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(render_area_page(sido, sigungu, items, today_str))
+
+        encoded_name = urllib.parse.quote(filename)
+        links_html += f'<a href="area/{encoded_name}" class="area-card block bg-white border border-gray-200 rounded-xl p-4 hover:border-blue-500 hover:shadow-sm transition" data-area="{sido} {sigungu}"><div class="font-bold text-gray-900">{sido} {sigungu}</div><div class="text-xs text-gray-500 mt-1">운영 약국 {len(items)}곳</div></a>\n'
+        sitemap_urls.append(f"{SITE_URL}/area/{encoded_name}")
+
+    index_html = f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>전국 야간·주말·공휴일 문 여는 약국 실시간 찾기</title>
+    <meta name="description" content="전국 시군구별 평일 야간, 토요일, 일요일, 공휴일에 문 여는 약국 영업시간과 전화번호를 한눈에 확인하세요.">
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 text-gray-900">
+    <main class="max-w-4xl mx-auto px-4 py-10">
+        <h1 class="text-3xl font-extrabold text-blue-700">365 야간·주말 약국찾기</h1>
+        <p class="text-sm text-gray-600 mt-2">전국 <strong>{len(grouped)}개</strong> 지역의 야간·일요일·공휴일 운영 약국을 매일 자동 업데이트합니다. (업데이트: {today_str})</p>
+
+        <div class="mt-5">
+            <input type="text" id="areaSearch" placeholder="지역명을 검색하세요 (예: 파주, 강남, 부산, 일산)"
+                class="w-full px-4 py-3.5 rounded-xl border border-gray-300 bg-white text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        </div>
+
+        <div id="areaGrid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 mt-6">
+            {links_html}
+        </div>
+    </main>
+
+    <footer class="max-w-4xl mx-auto px-4 py-8 text-center text-xs text-gray-400">
+        데이터 출처: 공공데이터포털(국립중앙의료원) · 매일 새벽 자동 갱신
+    </footer>
+
+    <script>
+        document.getElementById('areaSearch').addEventListener('input', function(e) {{
+            const kw = e.target.value.trim().toLowerCase();
+            document.querySelectorAll('.area-card').forEach(card => {{
+                const text = card.getAttribute('data-area').toLowerCase();
+                card.style.display = text.includes(kw) ? '' : 'none';
+            }});
+        }});
+    </script>
+</body>
+</html>"""
+
+    with open(os.path.join(DIST_DIR, "index.html"), "w", encoding="utf-8") as f:
+        f.write(index_html)
+
+    sitemap_xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+    for u in sitemap_urls:
+        sitemap_xml += f"  <url><loc>{u}</loc><lastmod>{today_str}</lastmod></url>\n"
+    sitemap_xml += "</urlset>"
+    with open(os.path.join(DIST_DIR, "sitemap.xml"), "w", encoding="utf-8") as f:
+        f.write(sitemap_xml)
+
+    with open(os.path.join(DIST_DIR, "robots.txt"), "w", encoding="utf-8") as f:
+        f.write(f"User-agent: *\nAllow: /\nSitemap: {SITE_URL}/sitemap.xml\n")
+
+    print(f"[완료] 전국 {len(grouped)}개 지역 페이지 및 sitemap.xml 생성 완료!")
+
 if __name__ == "__main__":
     build()
