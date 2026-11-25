@@ -197,3 +197,5 @@ def build():
         if len(addr_parts) < 2:
             continue
         sido
+if __name__ == "__main__":
+    build()
